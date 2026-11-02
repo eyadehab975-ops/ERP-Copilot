@@ -1,0 +1,402 @@
+import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+import requests
+
+# إعداد واجهة المستخدم
+st.set_page_config(page_title="ERP-Copilot", layout="wide")
+st.title("📊 نظام ERP-Copilot الذكي")
+
+# دالة إرسال رسالة واتساب
+def send_whatsapp(message):
+    # استخدام Twilio كمثال للواتساب
+    # استبدل القيم ببياناتك الحقيقية
+    account_sid = 'your_account_sid'
+    auth_token = 'your_auth_token'
+    from_number = 'whatsapp:+14155238886'
+    to_number = 'whatsapp:+15017122661'
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+    
+    payload = {
+        'From': from_number,
+        'To': to_number,
+        'Body': message
+    }
+    
+    try:
+        response = requests.post(url, data=payload, auth=(account_sid, auth_token))
+        return response.status_code == 201
+    except Exception as e:
+        return False
+
+# دالة إرسال رسالة تيليجرام
+def send_telegram(message):
+    # استخدام Telegram Bot API
+    bot_token = 'your_bot_token'
+    chat_id = 'your_chat_id'
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    
+    payload = {
+        'chat_id': chat_id,
+        'text': message
+    }
+    
+    try:
+        response = requests.post(url, data=payload)
+        return response.status_code == 200
+    except Exception as e:
+        return False
+
+# بيانات تجريبية للمخزون والتنبؤ
+@st.cache_data
+def load_data():
+    data = {
+        'Product_Name': ['دقيق فاخر', 'أرز مصري', 'مضاد حيوي X', 'فيتامينات C', 'زيت طعام'],
+        'Stock_Quantity': [50, 20, 100, 150, 40],
+        'Min_Stock_Level': [60, 25, 80, 100, 50],  # الحد الأدنى لإعادة الطلب
+        'Average_Monthly_Sales': [20, 15, 30, 40, 25],
+        'Last_Sold_Days_Ago': [70, 10, 5, 2, 45],
+        'Purchase_Price': [10, 15, 50, 20, 25],
+        'Sale_Price': [12, 18, 55, 22, 28],
+        'Expiry_Date': [
+            (datetime.now() + timedelta(days=20)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=5)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=90)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=15)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=120)).strftime('%Y-%m-%d')
+        ]
+    }
+    return pd.DataFrame(data)
+
+df = load_data()
+df['Expiry_Date'] = pd.to_datetime(df['Expiry_Date'])
+
+# 1. تنبيهات تاريخ الصلاحية وإرسال التنبيه
+st.subheader("⚠️ تنبيهات تاريخ الصلاحية")
+today = datetime.now()
+expiring_soon = df[df['Expiry_Date'] - today <= timedelta(days=30)]
+
+if not expiring_soon.empty:
+    for index, row in expiring_soon.iterrows():
+        msg = f"تنبيه! المنتج '{row['Product_Name']}' تنتهي صلاحيته في {row['Expiry_Date'].date()}!"
+        st.warning(msg)
+        if st.checkbox(f"إرسال تنبيه واتساب وتيليجرام لـ {row['Product_Name']}"):
+            send_whatsapp(msg)
+            send_telegram(msg)
+else:
+    st.success("لا توجد منتجات منتهية الصلاحية قريباً.")
+
+# 2. كشف الراكد (Dead Stock Detection)
+st.subheader("📦 كشف البضاعة الراكدة")
+dead_stock = df[df['Last_Sold_Days_Ago'] > 60]
+
+if not dead_stock.empty:
+    st.table(dead_stock[['Product_Name', 'Stock_Quantity', 'Last_Sold_Days_Ago']])
+    if st.button("إرسال تنبيه بالبضاعة الراكدة"):
+        msg = "تقرير: لديك بضاعة راكدة في المخزن تحتاج لتصريفها."
+        send_whatsapp(msg)
+        send_telegram(msg)
+else:
+    st.success("حركة المخزون ممتازة، لا توجد بضاعة راكدة.")
+
+# 3. التنبؤ الضعيف بالطلب وإعادة الطلب (Demand Forecasting)
+st.subheader("📉 التنبؤ بالطلب وإعادة الطلب")
+df['Reorder_Point'] = df['Average_Monthly_Sales'] * 1.5  # معادلة بسيطة لنقطة إعادة الطلب
+low_stock = df[df['Stock_Quantity'] < df['Reorder_Point']]
+
+if not low_stock.empty:
+    st.write("المنتجات التالية تحتاج لإعادة طلب:")
+    st.table(low_stock[['Product_Name', 'Stock_Quantity', 'Reorder_Point']])
+    if st.button("إرسال تنبيه لنقص المخزون"):
+        msg = "تنبيه: بعض المنتجات وصلت لمستوى إعادة الطلب!"
+        send_whatsapp(msg)
+        send_telegram(msg)
+else:
+    st.success("مستويات المخزون كافية.")
+
+# 4. محاكي التسعير الذكي (What-If Pricing Simulator)
+st.subheader("💰 محاكي التسعير الذكي")
+selected_product = st.selectbox("اختر منتجاً لتعديل سعره:", df['Product_Name'].unique())
+product_data = df[df['Product_Name'] == selected_product].iloc[0]
+
+current_price = product_data['Sale_Price']
+purchase_cost = product_data['Purchase_Price']
+
+price_increase = st.slider("نسبة تغيير سعر البيع (٪):", min_value=-50, max_value=50, value=0)
+new_price = current_price * (1 + price_increase / 100)
+new_margin = new_price - purchase_cost
+margin_percentage = (new_margin / new_price) * 100 if new_price > 0 else 0
+
+st.write(f"السعر الحالي: {current_price} | هامش الربح الحالي: {((current_price - purchase_cost) / current_price) * 100:.1f}%")
+st.write(f"السعر المقترح: {new_price:.2f} | هامش الربح المقترح: {margin_percentage:.1f}%")
+
+if new_price < purchase_cost:
+    st.error("تنبيه: السعر المقترح أقل من تكلفة الشراء! ستبيع بخسارة.")
+import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+import requests
+
+# إعداد واجهة المستخدم
+st.set_page_config(page_title="ERP-Copilot", layout="wide")
+st.title("📊 نظام ERP-Copilot الذكي")
+
+# دالة إرسال رسالة واتساب
+def send_whatsapp(message):
+    # استخدام Twilio كمثال للواتساب
+    # استبدل القيم ببياناتك الحقيقية
+    account_sid = 'your_account_sid'
+    auth_token = 'your_auth_token'
+    from_number = 'whatsapp:+14155238886'
+    to_number = 'whatsapp:+15017122661'
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+    
+    payload = {
+        'From': from_number,
+        'To': to_number,
+        'Body': message
+    }
+    
+    try:
+        response = requests.post(url, data=payload, auth=(account_sid, auth_token))
+        return response.status_code == 201
+    except Exception as e:
+        return False
+
+# دالة إرسال رسالة تيليجرام
+def send_telegram(message):
+    # استخدام Telegram Bot API
+    bot_token = 'your_bot_token'
+    chat_id = 'your_chat_id'
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    
+    payload = {
+        'chat_id': chat_id,
+        'text': message
+    }
+    
+    try:
+        response = requests.post(url, data=payload)
+        return response.status_code == 200
+    except Exception as e:
+        return False
+
+# بيانات تجريبية للمخزون والتنبؤ
+@st.cache_data
+def load_data():
+    data = {
+        'Product_Name': ['دقيق فاخر', 'أرز مصري', 'مضاد حيوي X', 'فيتامينات C', 'زيت طعام'],
+        'Stock_Quantity': [50, 20, 100, 150, 40],
+        'Min_Stock_Level': [60, 25, 80, 100, 50],  # الحد الأدنى لإعادة الطلب
+        'Average_Monthly_Sales': [20, 15, 30, 40, 25],
+        'Last_Sold_Days_Ago': [70, 10, 5, 2, 45],
+        'Purchase_Price': [10, 15, 50, 20, 25],
+        'Sale_Price': [12, 18, 55, 22, 28],
+        'Expiry_Date': [
+            (datetime.now() + timedelta(days=20)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=5)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=90)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=15)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=120)).strftime('%Y-%m-%d')
+        ]
+    }
+    return pd.DataFrame(data)
+
+df = load_data()
+df['Expiry_Date'] = pd.to_datetime(df['Expiry_Date'])
+
+# 1. تنبيهات تاريخ الصلاحية وإرسال التنبيه
+st.subheader("⚠️ تنبيهات تاريخ الصلاحية")
+today = datetime.now()
+expiring_soon = df[df['Expiry_Date'] - today <= timedelta(days=30)]
+
+if not expiring_soon.empty:
+    for index, row in expiring_soon.iterrows():
+        msg = f"تنبيه! المنتج '{row['Product_Name']}' تنتهي صلاحيته في {row['Expiry_Date'].date()}!"
+        st.warning(msg)
+        if st.checkbox(f"إرسال تنبيه واتساب وتيليجرام لـ {row['Product_Name']}"):
+            send_whatsapp(msg)
+            send_telegram(msg)
+else:
+    st.success("لا توجد منتجات منتهية الصلاحية قريباً.")
+
+# 2. كشف الراكد (Dead Stock Detection)
+st.subheader("📦 كشف البضاعة الراكدة")
+dead_stock = df[df['Last_Sold_Days_Ago'] > 60]
+
+if not dead_stock.empty:
+    st.table(dead_stock[['Product_Name', 'Stock_Quantity', 'Last_Sold_Days_Ago']])
+    if st.button("إرسال تنبيه بالبضاعة الراكدة"):
+        msg = "تقرير: لديك بضاعة راكدة في المخزن تحتاج لتصريفها."
+        send_whatsapp(msg)
+        send_telegram(msg)
+else:
+    st.success("حركة المخزون ممتازة، لا توجد بضاعة راكدة.")
+
+# 3. التنبؤ الضعيف بالطلب وإعادة الطلب (Demand Forecasting)
+st.subheader("📉 التنبؤ بالطلب وإعادة الطلب")
+df['Reorder_Point'] = df['Average_Monthly_Sales'] * 1.5  # معادلة بسيطة لنقطة إعادة الطلب
+low_stock = df[df['Stock_Quantity'] < df['Reorder_Point']]
+
+if not low_stock.empty:
+    st.write("المنتجات التالية تحتاج لإعادة طلب:")
+    st.table(low_stock[['Product_Name', 'Stock_Quantity', 'Reorder_Point']])
+    if st.button("إرسال تنبيه لنقص المخزون"):
+        msg = "تنبيه: بعض المنتجات وصلت لمستوى إعادة الطلب!"
+        send_whatsapp(msg)
+        send_telegram(msg)
+else:
+    st.success("مستويات المخزون كافية.")
+
+# 4. محاكي التسعير الذكي (What-If Pricing Simulator)
+st.subheader("💰 محاكي التسعير الذكي")
+selected_product = st.selectbox("اختر منتجاً لتعديل سعره:", df['Product_Name'].unique())
+product_data = df[df['Product_Name'] == selected_product].iloc[0]
+
+current_price = product_data['Sale_Price']
+purchase_cost = product_data['Purchase_Price']
+
+price_increase = st.slider("نسبة تغيير سعر البيع (٪):", min_value=-50, max_value=50, value=0)
+new_price = current_price * (1 + price_increase / 100)
+new_margin = new_price - purchase_cost
+margin_percentage = (new_margin / new_price) * 100 if new_price > 0 else 0
+
+st.write(f"السعر الحالي: {current_price} | هامش الربح الحالي: {((current_price - purchase_cost) / current_price) * 100:.1f}%")
+st.write(f"السعر المقترح: {new_price:.2f} | هامش الربح المقترح: {margin_percentage:.1f}%")
+
+if new_price < purchase_cost:
+    st.error("تنبيه: السعر المقترح أقل من تكلفة الشراء! ستبيع بخسارة.")
+import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+import requests
+
+# إعداد واجهة المستخدم
+st.set_page_config(page_title="ERP-Copilot", layout="wide")
+st.title("📊 نظام ERP-Copilot الذكي")
+
+# دالة إرسال رسالة واتساب
+def send_whatsapp(message):
+    # استخدام Twilio كمثال للواتساب
+    # استبدل القيم ببياناتك الحقيقية
+    account_sid = 'your_account_sid'
+    auth_token = 'your_auth_token'
+    from_number = 'whatsapp:+14155238886'
+    to_number = 'whatsapp:+15017122661'
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+    
+    payload = {
+        'From': from_number,
+        'To': to_number,
+        'Body': message
+    }
+    
+    try:
+        response = requests.post(url, data=payload, auth=(account_sid, auth_token))
+        return response.status_code == 201
+    except Exception as e:
+        return False
+
+# دالة إرسال رسالة تيليجرام
+def send_telegram(message):
+    # استخدام Telegram Bot API
+    bot_token = 'your_bot_token'
+    chat_id = 'your_chat_id'
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    
+    payload = {
+        'chat_id': chat_id,
+        'text': message
+    }
+    
+    try:
+        response = requests.post(url, data=payload)
+        return response.status_code == 200
+    except Exception as e:
+        return False
+
+# بيانات تجريبية للمخزون والتنبؤ
+@st.cache_data
+def load_data():
+    data = {
+        'Product_Name': ['دقيق فاخر', 'أرز مصري', 'مضاد حيوي X', 'فيتامينات C', 'زيت طعام'],
+        'Stock_Quantity': [50, 20, 100, 150, 40],
+        'Min_Stock_Level': [60, 25, 80, 100, 50],  # الحد الأدنى لإعادة الطلب
+        'Average_Monthly_Sales': [20, 15, 30, 40, 25],
+        'Last_Sold_Days_Ago': [70, 10, 5, 2, 45],
+        'Purchase_Price': [10, 15, 50, 20, 25],
+        'Sale_Price': [12, 18, 55, 22, 28],
+        'Expiry_Date': [
+            (datetime.now() + timedelta(days=20)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=5)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=90)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=15)).strftime('%Y-%m-%d'),
+            (datetime.now() + timedelta(days=120)).strftime('%Y-%m-%d')
+        ]
+    }
+    return pd.DataFrame(data)
+
+df = load_data()
+df['Expiry_Date'] = pd.to_datetime(df['Expiry_Date'])
+
+# 1. تنبيهات تاريخ الصلاحية وإرسال التنبيه
+st.subheader("⚠️ تنبيهات تاريخ الصلاحية")
+today = datetime.now()
+expiring_soon = df[df['Expiry_Date'] - today <= timedelta(days=30)]
+
+if not expiring_soon.empty:
+    for index, row in expiring_soon.iterrows():
+        msg = f"تنبيه! المنتج '{row['Product_Name']}' تنتهي صلاحيته في {row['Expiry_Date'].date()}!"
+        st.warning(msg)
+        if st.checkbox(f"إرسال تنبيه واتساب وتيليجرام لـ {row['Product_Name']}"):
+            send_whatsapp(msg)
+            send_telegram(msg)
+else:
+    st.success("لا توجد منتجات منتهية الصلاحية قريباً.")
+
+# 2. كشف الراكد (Dead Stock Detection)
+st.subheader("📦 كشف البضاعة الراكدة")
+dead_stock = df[df['Last_Sold_Days_Ago'] > 60]
+
+if not dead_stock.empty:
+    st.table(dead_stock[['Product_Name', 'Stock_Quantity', 'Last_Sold_Days_Ago']])
+    if st.button("إرسال تنبيه بالبضاعة الراكدة"):
+        msg = "تقرير: لديك بضاعة راكدة في المخزن تحتاج لتصريفها."
+        send_whatsapp(msg)
+        send_telegram(msg)
+else:
+    st.success("حركة المخزون ممتازة، لا توجد بضاعة راكدة.")
+
+# 3. التنبؤ الضعيف بالطلب وإعادة الطلب (Demand Forecasting)
+st.subheader("📉 التنبؤ بالطلب وإعادة الطلب")
+df['Reorder_Point'] = df['Average_Monthly_Sales'] * 1.5  # معادلة بسيطة لنقطة إعادة الطلب
+low_stock = df[df['Stock_Quantity'] < df['Reorder_Point']]
+
+if not low_stock.empty:
+    st.write("المنتجات التالية تحتاج لإعادة طلب:")
+    st.table(low_stock[['Product_Name', 'Stock_Quantity', 'Reorder_Point']])
+    if st.button("إرسال تنبيه لنقص المخزون"):
+        msg = "تنبيه: بعض المنتجات وصلت لمستوى إعادة الطلب!"
+        send_whatsapp(msg)
+        send_telegram(msg)
+else:
+    st.success("مستويات المخزون كافية.")
+
+# 4. محاكي التسعير الذكي (What-If Pricing Simulator)
+st.subheader("💰 محاكي التسعير الذكي")
+selected_product = st.selectbox("اختر منتجاً لتعديل سعره:", df['Product_Name'].unique())
+product_data = df[df['Product_Name'] == selected_product].iloc[0]
+
+current_price = product_data['Sale_Price']
+purchase_cost = product_data['Purchase_Price']
+
+price_increase = st.slider("نسبة تغيير سعر البيع (٪):", min_value=-50, max_value=50, value=0)
+new_price = current_price * (1 + price_increase / 100)
+new_margin = new_price - purchase_cost
+margin_percentage = (new_margin / new_price) * 100 if new_price > 0 else 0
+
+st.write(f"السعر الحالي: {current_price} | هامش الربح الحالي: {((current_price - purchase_cost) / current_price) * 100:.1f}%")
+st.write(f"السعر المقترح: {new_price:.2f} | هامش الربح المقترح: {margin_percentage:.1f}%")
+
+if new_price < purchase_cost:
+    st.error("تنبيه: السعر المقترح أقل من تكلفة الشراء! ستبيع بخسارة.")
